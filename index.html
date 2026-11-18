@@ -676,7 +676,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 <script id="attilaPreload">window.__ATTILA_PRELOAD__=window.__ATTILA_PRELOAD__||null;</script>
 </head>
 <body>
-<header><h1>ATTILA — Bilan Toiture</h1><span class="badge">V30 •&nbsp;<span id="saveStatus">Sauvegarde auto</span></span></header>
+<header><h1>ATTILA — Bilan Toiture</h1><span class="badge">V31 •&nbsp;<span id="saveStatus">Sauvegarde auto</span></span></header>
 <main>
 <div class="mobile-actions no-print">
 <button class="action primary" onclick="save()">💾</button>
@@ -684,6 +684,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 <button class="action" onclick="generateReport()">📄</button>
 <button class="action" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
 </div>
+
+<section class="card no-print" id="bilansCard">
+<h2>📁 Mes bilans</h2>
+<p class="small">Chaque bilan est enregistré sur ce téléphone. Touchez « Ouvrir » pour reprendre ou modifier un bilan.</p>
+<div class="actions"><button type="button" class="action primary" onclick="newBilan()">+ Nouveau bilan</button></div>
+<div id="bilanList" class="bilan-list"></div>
+</section>
 
 <section class="card">
 <h2>1. Entreprise</h2>
@@ -787,12 +794,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
 <section class="card no-print">
 <h2>5. Actions</h2>
-<p class="small">Le bilan s'enregistre automatiquement sur cet appareil à chaque modification. Exporte-le en fichier pour le garder ou le transférer.</p>
+<p class="small">Le bilan s'enregistre automatiquement sur cet appareil à chaque modification et reste disponible dans « Mes bilans ». Exporte-le en fichier pour le garder ou le transférer.</p>
 <div class="actions">
 <button class="action primary" onclick="exportStandalone()">📱 Exporter le bilan (fichier)</button>
 <button class="action" onclick="generateReport()">📄 Générer le rapport client</button>
 <button class="action" onclick="exportMyMaps()">🗺️ Export My Maps</button>
-<button class="action" onclick="resetAll()">Nouveau bilan</button>
+<button class="action" onclick="savePhotosToLibrary()">📲 Enregistrer les photos dans Photos</button>
+<button class="action" onclick="newBilan()">+ Nouveau bilan</button>
 </div>
 </section>
 
@@ -1464,6 +1472,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 <label>Constat / préconisation<textarea id="modalComment" rows="4" placeholder="Ce que tu constates et ce que tu préconises..."></textarea></label>
 <textarea id="modalRecommendation" hidden></textarea>
 <label class="photo-btn">📷 Ajouter une photo<input id="modalPhoto" type="file" accept="image/*" multiple capture="environment"></label>
+<button type="button" class="action save-shot" id="savePhotosBtn" hidden onclick="saveShotToPhotos()">📲 Enregistrer aussi dans Photos</button>
 <div id="modalPhotos" class="photos"></div>
 <details class="more-details"><summary>Plus de détails (catégorie, quantité)</summary>
 <label>Catégorie Attila
@@ -1506,7 +1515,8 @@ function persistNow(){
   clearTimeout(saveTimer);saveTimer=null;
   if(autosaveBlocked||loading)return Promise.resolve(false);
   const d=getDossier();
-  return idbSet(STORE_KEY,d).then(()=>{
+  // V31 : chaque bilan a sa propre fiche ("bilan:<id>") ; "current" = bilan ouvert ; "index" = liste « Mes bilans ».
+  return idbSet("bilan:"+d.bilanId,d).then(()=>idbSet("current",d.bilanId)).then(()=>updateBilanIndex(d)).then(()=>{
     try{localStorage.removeItem(STORE_KEY)}catch(e){}
     const t=new Date();setSaveStatus("✓ Enregistré "+String(t.getHours()).padStart(2,"0")+":"+String(t.getMinutes()).padStart(2,"0"));
     return true;
@@ -1559,16 +1569,119 @@ async function shrinkOldPhotos(){
 
 async function loadInitial(){
   let pre=window.__ATTILA_PRELOAD__||null,local=null,legacy=null;
-  try{local=await idbGet(STORE_KEY)}catch(e){}
+  // Bilan ouvert la dernière fois ; sinon le plus récent de « Mes bilans » ;
+  // l'ancien format à fiche unique (avant V31) n'est repris que s'il n'a jamais été migré.
+  let migrating=false;
+  const idx=await getBilanIndex();
+  try{const id=await idbGet("current");if(id)local=await idbGet("bilan:"+id)}catch(e){}
+  if(!local&&idx.length){try{local=await idbGet("bilan:"+idx[0].id)}catch(e){}}
+  if(!local&&!idx.length){try{const old=await idbGet(STORE_KEY);if(old){let dup=null;try{dup=await idbGet("bilan:"+old.bilanId)}catch(e){}local=dup||old;migrating=true}}catch(e){}}
   try{const l=localStorage.getItem(STORE_KEY);if(l)legacy=JSON.parse(l)}catch(e){}
+  // La copie de secours (fermeture de page) ne sert que pour le même bilan.
+  if(legacy&&local&&legacy.bilanId!==local.bilanId)legacy=null;
   let d=(local&&legacy)?(((legacy.savedAt||"")>(local.savedAt||""))?legacy:local):(local||legacy);
   // Fichier exporté : ses données priment, sauf si une version plus récente du même bilan existe sur l'appareil.
-  if(pre){d=(d&&d.bilanId&&d.bilanId===pre.bilanId&&(d.savedAt||"")>(pre.savedAt||""))?d:pre}
+  if(pre){let same=null;try{same=await idbGet("bilan:"+pre.bilanId)}catch(e){}
+    d=(same&&(same.savedAt||"")>(pre.savedAt||""))?same:pre}
   try{if(d)applyDossier(d)}catch(e){console.error(e)}
   loading=false;
-  if(d&&d!==local)persistNow();else setSaveStatus("✓ Sauvegarde auto");
+  // Enregistre le bilan dans « Mes bilans » ; une fois la migration confirmée, l'ancienne fiche unique est effacée.
+  persistNow().then(ok=>{if(ok&&migrating)idbDel(STORE_KEY)});
+  if(!d)idbDel(STORE_KEY);
   shrinkOldPhotos();
 }
+function todayLocal(){const t=new Date();return t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0")}
+
+/* ===== V31 — plusieurs bilans enregistrés (« Mes bilans ») ===== */
+const ANOM_STATES=["À surveiller","À réparer","Urgent"];
+function dossierPoints(d){
+  const out=[];(d.roofs||[]).forEach(r=>{const all=r.planIndex==="aerial"?(r.geoPins||[]):r.planIndex==="custom"?(r.customPins||[]):Object.values(r.points||{});all.forEach(p=>out.push(p))});return out;
+}
+function bilanMeta(d){
+  const pts=dossierPoints(d);
+  return {id:d.bilanId,entreprise:d.entreprise||"",adresse:d.adresse||"",date:d.date||"",savedAt:d.savedAt||"",
+    nAnom:pts.filter(p=>ANOM_STATES.includes(p.state)).length,nPhotos:pts.reduce((s,p)=>s+(p.photos||[]).length,0)};
+}
+function isBlankDossier(d){
+  if([d.entreprise,d.contact,d.telephone,d.email,d.adresse].some(v=>String(v||"").trim()))return false;
+  return !dossierPoints(d).some(p=>p.state||String(p.comment||"").trim()||(p.photos||[]).length);
+}
+async function getBilanIndex(){try{const a=await idbGet("index");return Array.isArray(a)?a:[]}catch(e){return []}}
+async function updateBilanIndex(d){
+  const a=(await getBilanIndex()).filter(x=>x.id!==d.bilanId);a.push(bilanMeta(d));
+  a.sort((x,y)=>String(y.savedAt||"").localeCompare(String(x.savedAt||"")));
+  await idbSet("index",a);renderBilanList(a);
+}
+function dateFrShort(s){const m=String(s||"").match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?m[3]+"/"+m[2]+"/"+m[1]:"date ?"}
+function plural(n,w){return n+" "+w+(n>1?"s":"")}
+async function renderBilanList(a){
+  const box=document.getElementById("bilanList");if(!box)return;
+  a=a||await getBilanIndex();
+  if(!a.length){box.innerHTML='<p class="small">Aucun bilan enregistré pour l’instant.</p>';return}
+  const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+  box.innerHTML=a.filter(x=>/^[A-Za-z0-9_-]+$/.test(String(x.id))).map(x=>{const cur=x.id===bilanId;
+    return `<div class="bilan-item${cur?" current":""}"><div class="bilan-main"><b>${esc(x.entreprise||"Bilan sans nom")}</b>`+
+      `<span>Visite du ${dateFrShort(x.date)} · ${plural(x.nAnom||0,"anomalie")} · ${plural(x.nPhotos||0,"photo")}</span>`+
+      (x.adresse?`<span>${esc(x.adresse)}</span>`:"")+`</div><div class="bilan-btns">`+
+      (cur?`<span class="bilan-cur">Ouvert</span>`:`<button type="button" class="action" onclick="openBilan('${x.id}')">Ouvrir</button>`)+
+      `<button type="button" class="action bilan-del" onclick="deleteBilan('${x.id}')">Supprimer</button></div></div>`}).join("");
+}
+function resetBilanView(){
+  try{modal.classList.remove("open")}catch(e){}
+  currentPoint=null;visitMode=false;try{visitBtn.textContent="▶"}catch(e){}
+  if(typeof aerialRoofShown!=="undefined")aerialRoofShown=null;
+  if(typeof movingPin!=="undefined")movingPin=null;
+  try{aerialQuery.value=""}catch(e){}
+  if(typeof lastShot!=="undefined")lastShot=null;
+}
+async function leaveCurrentBilan(){
+  // Un bilan resté vide (rien saisi) n'encombre pas la liste : il est retiré au lieu d'être enregistré.
+  const d=getDossier();
+  if(isBlankDossier(d)){clearTimeout(saveTimer);saveTimer=null;await idbDel("bilan:"+d.bilanId);const a=(await getBilanIndex()).filter(x=>x.id!==d.bilanId);await idbSet("index",a)}
+  else await persistNow();
+}
+// Un seul changement de bilan à la fois (évite les doubles appuis).
+let bilanBusy=false;
+async function bilanOp(fn){if(bilanBusy)return;bilanBusy=true;try{await fn()}finally{bilanBusy=false}}
+function blankDossier(){return {bilanId,entreprise:"",contact:"",telephone:"",email:"",adresse:"",date:todayLocal(),roofs:[],action:""}}
+function newBilan(){return bilanOp(async()=>{
+  await leaveCurrentBilan();
+  resetBilanView();
+  bilanId="b"+Date.now().toString(36);
+  applyDossier(blankDossier());
+  await persistNow();
+  window.scrollTo({top:0,behavior:"smooth"});
+  toast("Nouveau bilan créé (date du jour)");
+})}
+function openBilan(id){return bilanOp(async()=>{
+  if(id===bilanId){toast("Ce bilan est déjà ouvert");return}
+  let d=null;try{d=await idbGet("bilan:"+id)}catch(e){}
+  if(!d){alert("Bilan introuvable sur ce téléphone.");renderBilanList();return}
+  await leaveCurrentBilan();
+  resetBilanView();
+  applyDossier(d);
+  await persistNow();
+  window.scrollTo({top:0,behavior:"smooth"});
+  toast("Bilan ouvert : "+(d.entreprise||"sans nom"));
+})}
+function deleteBilan(id){return bilanOp(async()=>{
+  const a=await getBilanIndex();const x=a.find(b=>b.id===id);
+  const name=(x&&x.entreprise)||"Bilan sans nom";
+  if(!confirm("Supprimer définitivement le bilan « "+name+" » et ses photos de ce téléphone ?\n\nCette action est irréversible. Pensez à exporter le bilan avant si besoin."))return;
+  await idbDel("bilan:"+id);
+  await idbSet("index",a.filter(b=>b.id!==id));
+  // Efface aussi les éventuelles copies de l'ancien format qui porteraient ce bilan.
+  try{const old=await idbGet(STORE_KEY);if(old&&old.bilanId===id)await idbDel(STORE_KEY)}catch(e){}
+  try{const l=JSON.parse(localStorage.getItem(STORE_KEY)||"null");if(l&&l.bilanId===id)localStorage.removeItem(STORE_KEY)}catch(e){}
+  if(id===bilanId){
+    // Bilan ouvert supprimé : on repart sur un bilan vierge, sans réenregistrer celui qui vient d'être supprimé.
+    clearTimeout(saveTimer);saveTimer=null;resetBilanView();
+    bilanId="b"+Date.now().toString(36);
+    applyDossier(blankDossier());
+    await persistNow();
+  }else renderBilanList();
+  toast("Bilan supprimé");
+})}
 
 let toastTimer=null;
 function toast(msg){
@@ -1745,6 +1858,7 @@ function showPoint(p){
   const isPin=currentPoint.type==="custom";
   modalNameWrap.hidden=!isPin;modalDelete.hidden=!isPin;modalName.value=isPin?(p.name||""):"";
   modalMove.hidden=!(isPin&&currentRoof().planIndex==="aerial"&&!p._new);
+  savePhotosBtn.hidden=!(lastShot&&lastShot.p===p&&canShareFiles(lastShot.files));
   modalState.value=p.state||"";modalCategory.value=p.category||"Information";
   const rec=String(p.recommendation||"").trim(),def=String(REC[p.name]||"").trim(),com=String(p.comment||"").trim();
   modalComment.value=(rec&&rec!==def&&rec!==com)?(com?com+"\n"+rec:rec):com;modalRecommendation.value="";
@@ -1758,6 +1872,30 @@ document.getElementById("stateButtons").addEventListener("click",e=>{
   const b=e.target.closest("button[data-state]");if(!b)return;
   modalState.value=(modalState.value===b.dataset.state)?"":b.dataset.state;syncStateButtons();
 });
+/* ===== V31 — enregistrer les photos dans la photothèque du téléphone =====
+   Une page web ne peut pas écrire seule dans Photos : on ouvre la feuille de partage du téléphone,
+   où l'on choisit « Enregistrer l'image » / « Enregistrer X images » (iPhone). */
+let lastShot=null;
+function canShareFiles(files){try{return !!(navigator.share&&navigator.canShare&&files.length&&navigator.canShare({files}))}catch(e){return false}}
+function saveShotToPhotos(){
+  if(!lastShot||!canShareFiles(lastShot.files))return;
+  navigator.share({files:lastShot.files}).then(()=>{savePhotosBtn.hidden=true;lastShot=null;toast("Photo enregistrée")}).catch(e=>{if(!e||e.name!=="AbortError")alert("Enregistrement impossible : "+(e&&e.message||e))});
+}
+function dataUrlToFile(u,name){
+  const [head,b64]=String(u).split(",");const mime=(head.match(/data:([^;]+)/)||[])[1]||"image/jpeg";
+  const bin=atob(b64||"");const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+  return new File([arr],name,{type:mime});
+}
+function savePhotosToLibrary(){
+  // Conversion synchrone : le partage doit partir directement du toucher sur le bouton.
+  const safe=(entreprise.value||"Bilan").trim().replace(/[^a-zA-Z0-9_-]+/g,"_").replace(/^_+|_+$/g,"")||"Bilan";
+  const files=[];
+  roofs.forEach((r,ri)=>{const pin=isPinPlan(r);const list=pin?pinsOf(r).map((p,i)=>[i+1,p]):Object.entries(r.points||{}).map(([k,p])=>[k,p]);
+    list.forEach(([num,p])=>(p.photos||[]).forEach((src,k)=>{if(typeof src==="string"&&src.startsWith("data:"))files.push(dataUrlToFile(src,`${safe}_T${ri+1}_${num}_${k+1}.jpg`))}))});
+  if(!files.length){alert("Aucune photo dans ce bilan.");return}
+  if(!canShareFiles(files)){alert("Ce navigateur ne permet pas d'enregistrer les photos. Sur iPhone, ouvrez l'appli dans Safari.");return}
+  navigator.share({files}).catch(e=>{if(!e||e.name!=="AbortError")alert("Enregistrement impossible : "+(e&&e.message||e))});
+}
 function closePoint(){
   // Un repère qui vient d'être posé puis fermé : retiré s'il est vide, sinon on demande avant de perdre la saisie.
   if(currentPoint&&currentPoint.type==="custom"){const r=currentRoof(),arr=pinsOf(r),p=arr[currentPoint.id];if(p&&p._new){
@@ -1780,6 +1918,8 @@ function copyModalToPoint(p){
   p.recommendation="";p.qty=modalQty.value;p.unit=modalUnit.value;
 }
 function savePoint(){
+  // V31 : un repère (vue aérienne ou plan personnalisé) doit avoir un état, sinon il n'apparaît pas dans les anomalies du rapport.
+  if(currentPoint.type==="custom"&&!modalState.value){alert("Choisis un état pour ce repère : Absent, À surveiller ou À réparer.");return}
   const p=getCurrentPoint();delete p._new;
   copyModalToPoint(p);
   render();closePoint();
@@ -1791,6 +1931,8 @@ function renderPhotos(){
 }
 modalPhoto.addEventListener("change",e=>{
   if(currentPoint===null)return;const p=getCurrentPoint();p.photos=p.photos||[];
+  // V31 : on garde les photos d'origine (pleine qualité) pour pouvoir les enregistrer aussi dans Photos.
+  lastShot={p,files:[...e.target.files]};savePhotosBtn.hidden=!canShareFiles(lastShot.files);
   [...e.target.files].forEach(f=>{compressImage(f,1600,0.72).then(src=>{p.photos.push(src);renderPhotos()}).catch(()=>alert("Impossible de lire cette photo."))});
   e.target.value="";
 });
@@ -1896,6 +2038,11 @@ async function loadPdfLibraries(){
 }
 
 async function generateReport(){
+  // V31 : état obligatoire sur les repères — pas de rapport tant qu'un repère n'a pas d'état.
+  const missing=[];
+  (roofs||[]).forEach((r,ri)=>{if(!isPinPlan(r))return;const nums=pinsOf(r).map((p,i)=>p.state?null:i+1).filter(Boolean);
+    if(nums.length)missing.push((roofs.length>1?(r.name||"Toiture "+(ri+1))+" : ":"")+(nums.length>1?"repères ":"repère ")+nums.join(", "))});
+  if(missing.length){alert("Avant de créer le rapport, choisis un état pour : "+missing.join(" ; ")+".\n\nOuvre chaque repère concerné et touche Absent, À surveiller ou À réparer.");return}
   const d={entreprise:entreprise.value||"",contact:contact.value||"",telephone:telephone.value||"",email:email.value||"",adresse:adresse.value||"",date:date.value||"",roofs:roofs||[]};
   const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   const br=s=>esc(s).replace(/\n/g,"<br>");
@@ -2061,13 +2208,9 @@ function zoomPlan(delta){
 }
 function resetPlanZoom(){planZoom=1;applyPlanZoom()}
 
-function resetAll(){
-  if(!confirm("Commencer un nouveau bilan ? Pense à exporter celui-ci avant si besoin."))return;
-  autosaveBlocked=true;
-  try{localStorage.removeItem("attilaBilanV14")}catch(e){}
-  idbDel(STORE_KEY).finally(()=>{location.href=location.pathname});
-}
-date.value=new Date().toISOString().slice(0,10);
+// V31 : « Nouveau bilan » ne supprime plus le bilan en cours, il reste dans « Mes bilans ».
+function resetAll(){return newBilan()}
+date.value=todayLocal();
 function applyDossier(d){
   if(!d)return;
   bilanId=d.bilanId||bilanId;
@@ -2196,6 +2339,19 @@ function importFullBackup(ev){
 .geo-pin{width:30px;height:30px;border-radius:15px;background:#2563eb;color:#fff;font:700 14px/26px Arial,sans-serif;text-align:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);box-sizing:border-box}
 .geo-pin.watch{background:#f59e0b;color:#1f2937}.geo-pin.repair{background:#dc2626}.geo-pin.urgent{background:#7f1d1d}.geo-pin.absent{background:#94a3b8}
 #modalDelete{color:#b91c1c;border-color:#fca5a5}
+/* V31 — Mes bilans, enregistrement des photos */
+.bilan-list{display:grid;gap:8px;margin-top:10px;max-height:340px;overflow:auto}
+.bilan-item{display:flex;gap:10px;align-items:center;justify-content:space-between;border:1px solid #e2e8f0;border-left:5px solid #cbd5e1;border-radius:10px;padding:10px 12px;background:#fff}
+.bilan-item.current{border-left-color:#16a34a;background:#f0fdf4}
+.bilan-main{min-width:0;display:grid;gap:2px}
+.bilan-main b{font-size:15px;overflow-wrap:anywhere}
+.bilan-main span{font-size:13px;color:#64748b;overflow-wrap:anywhere}
+.bilan-btns{display:flex;gap:6px;flex:none;align-items:center}
+.bilan-btns .action{padding:8px 10px}
+.bilan-cur{font-size:12px;font-weight:700;color:#166534;background:#dcfce7;border-radius:10px;padding:4px 9px}
+.bilan-del{color:#b91c1c;border-color:#fca5a5}
+@media(max-width:480px){.bilan-item{flex-direction:column;align-items:stretch}.bilan-btns .action{flex:1}}
+.save-shot{width:100%;min-height:46px;margin:-2px 0 10px;font-weight:700;border-color:#16a34a;color:#166534}
 @media print{.aerial-map{display:none}}
 </style>
 <script>
