@@ -676,21 +676,21 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 <script id="attilaPreload">window.__ATTILA_PRELOAD__=window.__ATTILA_PRELOAD__||null;</script>
 </head>
 <body>
-<header><h1>ATTILA — Bilan Toiture</h1><span class="badge">V31 •&nbsp;<span id="saveStatus">Sauvegarde auto</span></span></header>
+<header><h1>ATTILA — Bilan Toiture</h1><span class="badge">V32 •&nbsp;<span id="saveStatus">Sauvegarde auto</span></span></header>
 <main>
 <div class="mobile-actions no-print">
-<button class="action primary" onclick="save()">💾</button>
-<button class="action" id="visitBtn" onclick="toggleVisit()" title="Mode visite : enchaîne les points non renseignés">▶</button>
-<button class="action" onclick="generateReport()">📄</button>
-<button class="action" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
+<button class="action primary" onclick="save()">💾<small>Enregistrer</small></button>
+<button class="action" onclick="openBilansPanel()">📁<small>Mes bilans</small></button>
+<button class="action" onclick="generateReport()">📄<small>Rapport</small></button>
 </div>
 
-<section class="card no-print" id="bilansCard">
-<h2>📁 Mes bilans</h2>
+<!-- V32 — onglet « Mes bilans » (plein écran), remplace le mode visite et le bouton « haut de page » -->
+<div id="bilansPanel" class="bilans-panel no-print" hidden role="dialog" aria-modal="true" aria-labelledby="bilansTitle">
+<div class="bilans-head"><h2 id="bilansTitle">📁 Mes bilans</h2><button type="button" class="close" onclick="closeBilansPanel()" aria-label="Fermer">×</button></div>
 <p class="small">Chaque bilan est enregistré sur ce téléphone. Touchez « Ouvrir » pour reprendre ou modifier un bilan.</p>
 <div class="actions"><button type="button" class="action primary" onclick="newBilan()">+ Nouveau bilan</button></div>
 <div id="bilanList" class="bilan-list"></div>
-</section>
+</div>
 
 <section class="card">
 <h2>1. Entreprise</h2>
@@ -799,6 +799,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 <button class="action primary" onclick="exportStandalone()">📱 Exporter le bilan (fichier)</button>
 <button class="action" onclick="generateReport()">📄 Générer le rapport client</button>
 <button class="action" onclick="exportMyMaps()">🗺️ Export My Maps</button>
+<button class="action" onclick="openBilansPanel()">📁 Mes bilans</button>
 <button class="action" onclick="savePhotosToLibrary()">📲 Enregistrer les photos dans Photos</button>
 <button class="action" onclick="newBilan()">+ Nouveau bilan</button>
 </div>
@@ -1640,6 +1641,10 @@ async function leaveCurrentBilan(){
   if(isBlankDossier(d)){clearTimeout(saveTimer);saveTimer=null;await idbDel("bilan:"+d.bilanId);const a=(await getBilanIndex()).filter(x=>x.id!==d.bilanId);await idbSet("index",a)}
   else await persistNow();
 }
+/* V32 — onglet « Mes bilans » plein écran */
+function openBilansPanel(){const p=document.getElementById("bilansPanel");if(!p)return;renderBilanList();p.hidden=false;p.scrollTop=0;document.body.classList.add("panel-open")}
+function closeBilansPanel(){const p=document.getElementById("bilansPanel");if(!p)return;p.hidden=true;document.body.classList.remove("panel-open")}
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){const p=document.getElementById("bilansPanel");if(p&&!p.hidden)closeBilansPanel()}});
 // Un seul changement de bilan à la fois (évite les doubles appuis).
 let bilanBusy=false;
 async function bilanOp(fn){if(bilanBusy)return;bilanBusy=true;try{await fn()}finally{bilanBusy=false}}
@@ -1650,17 +1655,19 @@ function newBilan(){return bilanOp(async()=>{
   bilanId="b"+Date.now().toString(36);
   applyDossier(blankDossier());
   await persistNow();
+  closeBilansPanel();
   window.scrollTo({top:0,behavior:"smooth"});
   toast("Nouveau bilan créé (date du jour)");
 })}
 function openBilan(id){return bilanOp(async()=>{
-  if(id===bilanId){toast("Ce bilan est déjà ouvert");return}
+  if(id===bilanId){closeBilansPanel();toast("Ce bilan est déjà ouvert");return}
   let d=null;try{d=await idbGet("bilan:"+id)}catch(e){}
   if(!d){alert("Bilan introuvable sur ce téléphone.");renderBilanList();return}
   await leaveCurrentBilan();
   resetBilanView();
   applyDossier(d);
   await persistNow();
+  closeBilansPanel();
   window.scrollTo({top:0,behavior:"smooth"});
   toast("Bilan ouvert : "+(d.entreprise||"sans nom"));
 })}
@@ -2340,7 +2347,15 @@ function importFullBackup(ev){
 .geo-pin.watch{background:#f59e0b;color:#1f2937}.geo-pin.repair{background:#dc2626}.geo-pin.urgent{background:#7f1d1d}.geo-pin.absent{background:#94a3b8}
 #modalDelete{color:#b91c1c;border-color:#fca5a5}
 /* V31 — Mes bilans, enregistrement des photos */
-.bilan-list{display:grid;gap:8px;margin-top:10px;max-height:340px;overflow:auto}
+.bilan-list{display:grid;gap:8px;margin-top:10px}
+/* V32 — onglet Mes bilans plein écran + barre d'actions avec libellés */
+.bilans-panel{position:fixed;inset:0;z-index:30;background:#f3f4f6;overflow:auto;padding:calc(14px + env(safe-area-inset-top,0px)) 16px calc(20px + env(safe-area-inset-bottom,0px));-webkit-overflow-scrolling:touch}
+.bilans-panel[hidden]{display:none}
+.bilans-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
+.bilans-head h2{margin:0;font-size:22px}
+.bilans-head .close{font-size:26px;line-height:1;width:44px;height:44px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;cursor:pointer}
+body.panel-open{overflow:hidden}
+.mobile-actions .action small{display:block;font-size:11px;font-weight:600;line-height:1.2;margin-top:2px}
 .bilan-item{display:flex;gap:10px;align-items:center;justify-content:space-between;border:1px solid #e2e8f0;border-left:5px solid #cbd5e1;border-radius:10px;padding:10px 12px;background:#fff}
 .bilan-item.current{border-left-color:#16a34a;background:#f0fdf4}
 .bilan-main{min-width:0;display:grid;gap:2px}
